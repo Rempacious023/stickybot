@@ -10,10 +10,8 @@ const fs = require('fs');
 
 const TOKEN = process.env.DISCORD_TOKEN || 'YOUR_DISCORD_TOKEN';
 
-// Configuration file path
 const configFile = path.join(__dirname, 'data.json');
 
-// Default configuration
 const defaultConfig = {
   channelIds: [],
   stickyMessage: 'This is a sticky message!',
@@ -21,7 +19,6 @@ const defaultConfig = {
   postInterval: 60000
 };
 
-// Load configuration from file
 let config = defaultConfig;
 if (fs.existsSync(configFile)) {
   try {
@@ -32,7 +29,6 @@ if (fs.existsSync(configFile)) {
   }
 }
 
-// Save configuration to file
 function saveConfig() {
   fs.writeFileSync(configFile, JSON.stringify(config, null, 2));
 }
@@ -56,7 +52,6 @@ app.post('/api/config', (req, res) => {
   config.tickInterval = Number(req.body.tickInterval) || config.tickInterval;
   config.postInterval = Number(req.body.postInterval) || config.postInterval;
   
-  // Parse channel IDs (comma-separated)
   if (req.body.channelIds) {
     config.channelIds = req.body.channelIds
       .split(',')
@@ -69,7 +64,6 @@ app.post('/api/config', (req, res) => {
 });
 
 const client = new Client();
-let currentMessageIndex = 0;
 let messageQueue = [];
 
 client.on('ready', () => {
@@ -89,39 +83,49 @@ function startStickyLoop() {
   }, config.tickInterval);
 }
 
-function postNextMessage() {
+async function postNextMessage() {
   if (messageQueue.length === 0) return;
   
   const channelId = messageQueue.shift();
   
-  client.channels.fetch(channelId)
-    .then(channel => {
-      // Delete previous message if exists
-      if (channel.lastMessageId) {
-        channel.messages.fetch(channel.lastMessageId)
-          .then(msg => {
-            if (msg.author.id === client.user.id) {
-              msg.delete().catch(() => {});
-            }
-          })
-          .catch(() => {});
-      }
+  try {
+    const channel = await client.channels.fetch(channelId);
+    
+    if (!channel) {
+      console.error(`Channel ${channelId} not found`);
+      scheduleNextPost();
+      return;
+    }
+
+    try {
+      // Get the last message from the channel
+      const messages = await channel.messages.fetch({ limit: 1 });
+      const lastMessage = messages.first();
       
-      // Post new message
-      channel.send(config.stickyMessage)
-        .then(() => {
-          console.log(`Posted to channel ${channelId}`);
-          setTimeout(() => postNextMessage(), config.postInterval);
-        })
-        .catch(err => {
-          console.error(`Failed to post to ${channelId}:`, err.message);
-          setTimeout(() => postNextMessage(), config.postInterval);
-        });
-    })
-    .catch(err => {
-      console.error(`Failed to fetch channel ${channelId}:`, err.message);
-      setTimeout(() => postNextMessage(), config.postInterval);
-    });
+      // Delete previous sticky message if it exists and was sent by us
+      if (lastMessage && lastMessage.author.id === client.user.id) {
+        await lastMessage.delete().catch(() => {});
+      }
+    } catch (err) {
+      console.log(`Could not fetch/delete previous message in ${channelId}: ${err.message}`);
+    }
+    
+    // Post new message
+    try {
+      await channel.send(config.stickyMessage);
+      console.log(`Posted to channel ${channelId}`);
+    } catch (err) {
+      console.error(`Failed to post to ${channelId}: ${err.message}`);
+    }
+  } catch (err) {
+    console.error(`Failed to fetch channel ${channelId}: ${err.message}`);
+  }
+  
+  scheduleNextPost();
+}
+
+function scheduleNextPost() {
+  setTimeout(() => postNextMessage(), config.postInterval);
 }
 
 const PORT = process.env.PORT || 3000;
